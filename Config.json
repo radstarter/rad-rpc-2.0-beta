@@ -1,0 +1,32 @@
+{
+  "packages": [
+    {
+      "name": "GumballMachine",
+      "path_to_wasm": "/home/user/dev/rs/radixdlt-scrypto/examples/core/gumball-machine/target/wasm32-unknown-unknown/release/gumball_machine.wasm",
+      "call_new": true,
+      "args": [
+        "0.5"
+      ],
+      "components": [
+        "machine0"
+      ],
+      "resources": [
+        "Gumballs"
+      ]
+    },
+    {
+      "name": "GumballMachine",
+      "path_to_wasm": "/home/user/dev/rs/radixdlt-scrypto/examples/core/gumball-machine/target/wasm32-unknown-unknown/release/gumball_machine.wasm",
+      "call_new": false,
+      "args": [
+        "1.5"
+      ],
+      "components": [
+        "machine1"
+      ],
+      "resources": [
+        "Ballz"
+      ]
+    }
+  ]
+}
