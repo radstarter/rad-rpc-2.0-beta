@@ -1,8 +1,6 @@
 use jsonrpc_core::serde_json::json;
 use radix_engine::ledger::*;
 
-use super::LEDGER;
-
 use sbor::any::*;
 use sbor::*;
 use scrypto::buffer::*;

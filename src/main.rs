@@ -2,7 +2,6 @@
 extern crate lazy_static;
 
 use parking_lot::RwLock;
-use radix_engine::ledger::*;
 use std::sync::Arc;
 
 mod config;
@@ -12,8 +11,6 @@ mod scrypto_helpers;
 mod setup;
 
 lazy_static! {
-    static ref LEDGER: Arc<RwLock<InMemoryLedger>> =
-        Arc::new(RwLock::new(InMemoryLedger::with_bootstrap()));
     static ref CONFIG: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(config::Config::new()));
 }
 
@@ -26,6 +23,16 @@ fn main() {
 
     let handle = std::thread::spawn(|| {
         json_rpc_thread::rpc_thread();
+    });
+
+    let handle2 = std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(180));
+
+        let writer_lock = CONFIG.write();
+        let _ = parking_lot::RwLockWriteGuard::map(writer_lock, |config| {
+            config.increment_epoch();
+            config
+        });
     });
 
     let _ = handle.join();
