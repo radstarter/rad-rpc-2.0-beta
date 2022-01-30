@@ -1,7 +1,6 @@
 use super::config::Config;
 use super::scrypto_helpers;
 use super::CONFIG;
-use super::LEDGER;
 
 use parking_lot::{RwLock, RwLockWriteGuard};
 
@@ -64,12 +63,13 @@ pub fn run_setup() {
     let mut admin_account: Address =
         Address::from_str("02b9f7c0c44a6e2162403cea3fa44500dff50eb18fd4ff5a9dd079").unwrap();
 
-    let writer_lock = LEDGER.write();
+    let writer_lock = CONFIG.write();
 
     // We use a closure to access the inner of an RwLock, notice we return the &mut ledger
     // at the very end to put it back in the RwLock, ONLY CALL THIS WHEN YOU HAVE ALREADY ACQUIRED
     // THE LOCK
-    let mapped = RwLockWriteGuard::map(writer_lock, |ledger| {
+    let _ = RwLockWriteGuard::map(writer_lock, |config| {
+        let (_, _, ledger) = config.load();
         let mut executor = TransactionExecutor::new(ledger, 0, 0);
 
         //Create admin account real values
@@ -147,14 +147,11 @@ pub fn run_setup() {
             admin_key.to_string(),
         );
 
-        let write = CONFIG.write();
-        let _ = RwLockWriteGuard::map(write, |config| {
-            config.store_nonce(&executor);
-            config
-        });
+        let nonce = executor.nonce();
+        config.store_nonce(nonce);
 
-        //Pass back the ledger to the RwLockWriteGuard
-        ledger
+        //Pass back the config to the RwLockWriteGuard
+        config
     });
 }
 

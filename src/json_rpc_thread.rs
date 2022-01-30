@@ -1,12 +1,9 @@
-use std::ptr::addr_of;
-
 use crate::formatter::format_data_with_ledger;
 
 use super::formatter;
 use super::scrypto_helpers;
 
 use super::CONFIG;
-use super::LEDGER;
 
 use ::jsonrpc_core::serde_json::json;
 use jsonrpc_core::serde::Deserialize;
@@ -51,12 +48,12 @@ pub fn rpc_thread() {
     let mut io = IoHandler::default();
 
     // Add all methods that should be callable through the JSON-RPC server
-    io.add_method("new_account", |_params| async move { new_account() });
+    io.add_method("new_account", |_params| async move { new_account().await });
 
     io.add_method("call_function", |params: Params| async move {
         let parsed = params.parse().ok();
         match parsed {
-            Some(v) => call_function(v),
+            Some(v) => call_function(v).await,
             None => return parse_err(),
         }
     });
@@ -64,7 +61,7 @@ pub fn rpc_thread() {
     io.add_method("call_method", |params: Params| async move {
         let parsed = params.parse().ok();
         match parsed {
-            Some(v) => call_method(v),
+            Some(v) => call_method(v).await,
             None => return parse_err(),
         }
     });
@@ -72,7 +69,7 @@ pub fn rpc_thread() {
     io.add_method("get_balance", |params: Params| async move {
         let parsed = params.parse().ok();
         match parsed {
-            Some(v) => get_balance(v),
+            Some(v) => get_balance(v).await,
             None => return parse_err(),
         }
     });
@@ -88,56 +85,47 @@ pub fn rpc_thread() {
     server.wait();
 }
 
-fn new_account() -> jsonrpc_core::Result<jsonrpc_core::Value> {
+async fn new_account() -> jsonrpc_core::Result<jsonrpc_core::Value> {
     //Instantiate with dummy values to move into closure
     let mut key: Address =
         Address::from_str("02b8dd9f4232ce3c00dcb3496956fb57096d5d50763b989ca56f3b").unwrap();
     let mut account: Address =
         Address::from_str("02b9f7c0c44a6e2162403cea3fa44500dff50eb18fd4ff5a9dd079").unwrap();
 
-    // Can't use RwLockWriteGuard::unlocked's FnOnce because we need to hold the lock on config for
-    // as long as we're using the ledger. Otherwise the nonce might go out of sync. Make sure to
-    // ALWAYS call .write() and keep the lock open for as long as you use the ledger. It is a bit
-    // uglier then FnOnce but it is correct.
     let write_lock_conf = CONFIG.write();
-    let map_config = RwLockWriteGuard::map(write_lock_conf, |config| {
-        let (epoch, nonce) = config.load_nonce();
+    let _ = RwLockWriteGuard::map(write_lock_conf, |config| {
+        let (epoch, nonce, ledger) = config.load();
+        //Do transaction
+        let mut executor = TransactionExecutor::new(ledger, epoch, nonce);
+        key = executor.new_public_key();
+        account = executor.new_account(key);
 
-        // Acquire the ledger from the inside of the RwLock, always return it at the end
-        let write_lock_ledger = LEDGER.write();
-        let map_ledger = RwLockWriteGuard::map(write_lock_ledger, |ledger| {
-            //Do transaction
-            let mut executor = TransactionExecutor::new(ledger, epoch, nonce);
-            key = executor.new_public_key();
-            account = executor.new_account(key);
-
-            //Store the nonce and return the ledger and config
-            config.store_nonce(&executor);
-            ledger
-        });
+        //Store the nonce and return the ledger and config
+        let nonce = executor.nonce();
+        config.store_nonce(nonce);
         config
     });
     Ok(json!({"key": key.to_string(), "account": account.to_string()}))
 }
 
-fn call_function(params: CallFunction) -> jsonrpc_core::Result<jsonrpc_core::Value> {
+async fn call_function(params: CallFunction) -> jsonrpc_core::Result<jsonrpc_core::Value> {
     // Parse all values
     let package: Address;
     match Address::from_str(&params.address) {
         Ok(v) => package = v,
-        Err(e) => return invalid_params_err("Package address wrong format"),
+        Err(_) => return invalid_params_err("Package address wrong format"),
     }
 
     let account: Address;
     match Address::from_str(&params.account_address) {
         Ok(v) => account = v,
-        Err(e) => return invalid_params_err("Account wrong format"),
+        Err(_) => return invalid_params_err("Account wrong format"),
     }
 
     let signer: Address;
     match Address::from_str(&params.key) {
         Ok(v) => signer = v,
-        Err(e) => return invalid_params_err("Signer key wrong format"),
+        Err(_) => return invalid_params_err("Signer key wrong format"),
     }
     let signers = vec![signer];
 
@@ -145,32 +133,27 @@ fn call_function(params: CallFunction) -> jsonrpc_core::Result<jsonrpc_core::Val
     let mut receipt: Option<Receipt> = None;
 
     let write_lock_conf = CONFIG.write();
-    let map_config = RwLockWriteGuard::map(write_lock_conf, |config| {
-        let (epoch, nonce) = config.load_nonce();
-
-        // Acquire the ledger from the inside of the RwLock, always return it at the end
-        let write_lock_ledger = LEDGER.write();
-        let map_ledger = RwLockWriteGuard::map(write_lock_ledger, |ledger| {
-            //Do transaction
-            let mut executor = TransactionExecutor::new(ledger, epoch, nonce);
-            let transaction = TransactionBuilder::new(&executor)
-                .call_function(
-                    package,
-                    &params.name,
-                    &params.function,
-                    params.args,
-                    Some(account),
-                )
-                .drop_all_bucket_refs()
-                .deposit_all_buckets(account)
-                .build(signers);
-            if let Ok(transaction) = transaction {
-                receipt = Some(executor.run(transaction, false).unwrap());
-            }
-            //Store the nonce and return the ledger and config
-            config.store_nonce(&executor);
-            ledger
-        });
+    let _ = RwLockWriteGuard::map(write_lock_conf, |config| {
+        let (epoch, nonce, ledger) = config.load();
+        //Do transaction
+        let mut executor = TransactionExecutor::new(ledger, epoch, nonce);
+        let transaction = TransactionBuilder::new(&executor)
+            .call_function(
+                package,
+                &params.name,
+                &params.function,
+                params.args,
+                Some(account),
+            )
+            .drop_all_bucket_refs()
+            .deposit_all_buckets(account)
+            .build(signers);
+        if let Ok(transaction) = transaction {
+            receipt = Some(executor.run(transaction, false).unwrap());
+        }
+        //Store the nonce and return the ledger and config
+        let nonce = executor.nonce();
+        config.store_nonce(nonce);
         config
     });
 
@@ -186,25 +169,25 @@ fn call_function(params: CallFunction) -> jsonrpc_core::Result<jsonrpc_core::Val
     }
 }
 
-fn call_method(params: CallMethod) -> jsonrpc_core::Result<Value> {
+async fn call_method(params: CallMethod) -> jsonrpc_core::Result<Value> {
     // Parse all values
     let component: Address;
     match Address::from_str(&params.address) {
         Ok(v) => component = v,
-        Err(e) => return invalid_params_err("Package address wrong format"),
+        Err(_) => return invalid_params_err("Package address wrong format"),
     }
 
     // parse values
     let account: Address;
     match Address::from_str(&params.account_address) {
         Ok(v) => account = v,
-        Err(e) => return invalid_params_err("Account wrong format"),
+        Err(_) => return invalid_params_err("Account wrong format"),
     }
 
     let signer: Address;
     match Address::from_str(&params.key) {
         Ok(v) => signer = v,
-        Err(e) => return invalid_params_err("Signer key wrong format"),
+        Err(_) => return invalid_params_err("Signer key wrong format"),
     }
     let signers = vec![signer];
 
@@ -212,28 +195,24 @@ fn call_method(params: CallMethod) -> jsonrpc_core::Result<Value> {
     let mut receipt: Option<Receipt> = None;
 
     let write_lock_conf = CONFIG.write();
-    let map_config = RwLockWriteGuard::map(write_lock_conf, |config| {
-        let (epoch, nonce) = config.load_nonce();
-
-        // Acquire the ledger from the inside of the RwLock, always return it at the end
-        let write_lock_ledger = LEDGER.write();
-        let map_ledger = RwLockWriteGuard::map(write_lock_ledger, |ledger| {
-            //Do transaction
-            let mut executor = TransactionExecutor::new(ledger, epoch, nonce);
-            let transaction = TransactionBuilder::new(&executor)
-                .call_method(component, &params.method, params.args, Some(account))
-                .drop_all_bucket_refs()
-                .deposit_all_buckets(account)
-                .build(signers);
-            if let Ok(transaction) = transaction {
-                if let Ok(r) = executor.run(transaction, false) {
-                    receipt = Some(r);
-                }
+    let _ = RwLockWriteGuard::map(write_lock_conf, |config| {
+        let (epoch, nonce, ledger) = config.load();
+        //Do transaction
+        let mut executor = TransactionExecutor::new(ledger, epoch, nonce);
+        let transaction = TransactionBuilder::new(&executor)
+            .call_method(component, &params.method, params.args, Some(account))
+            .drop_all_bucket_refs()
+            .deposit_all_buckets(account)
+            .build(signers);
+        if let Ok(transaction) = transaction {
+            if let Ok(r) = executor.run(transaction, false) {
+                receipt = Some(r);
             }
-            //Store the nonce and return the ledger and config
-            config.store_nonce(&executor);
-            ledger
-        });
+        }
+        //Store the nonce and return the config
+        let nonce = executor.nonce();
+        config.store_nonce(nonce);
+
         config
     });
 
@@ -245,11 +224,12 @@ fn call_method(params: CallMethod) -> jsonrpc_core::Result<Value> {
                     if let Some(sv) = v {
                         let bytes = &sv.encoded[..];
                         let mut vaults: Vec<Vid> = Vec::new();
-                        let lock = LEDGER.read();
+                        let lock = CONFIG.read();
                         let mut err = 0;
                         //TODO: Let the formatter not depend on ledger, it only needs it to decode
                         //LazyMaps
-                        let _ = parking_lot::RwLockReadGuard::map(lock, |ledger| {
+                        let _ = parking_lot::RwLockReadGuard::map(lock, |config| {
+                            let ledger = config.load_immutable();
                             match formatter::format_data_with_ledger(bytes, ledger, &mut vaults) {
                                 Ok(decoded) => decoded_results.push(decoded),
                                 Err(e) => {
@@ -257,7 +237,7 @@ fn call_method(params: CallMethod) -> jsonrpc_core::Result<Value> {
                                     err = 1;
                                 }
                             }
-                            ledger
+                            config
                         });
                         if err == 1 {
                             return decode_err();
@@ -273,7 +253,7 @@ fn call_method(params: CallMethod) -> jsonrpc_core::Result<Value> {
     transaction_err()
 }
 
-fn get_balance(params: GetBalance) -> jsonrpc_core::Result<Value> {
+async fn get_balance(params: GetBalance) -> jsonrpc_core::Result<Value> {
     let address: Address;
     match Address::from_str(&params.address) {
         Ok(v) => address = v,
@@ -286,8 +266,9 @@ fn get_balance(params: GetBalance) -> jsonrpc_core::Result<Value> {
 
     let mut vids: Vec<Vid> = Vec::new();
     let mut amounts: Option<HashMap<String, Number>> = None;
-    let lock = LEDGER.read();
-    let _ = parking_lot::RwLockReadGuard::map(lock, |ledger| {
+    let lock = CONFIG.read();
+    let _ = parking_lot::RwLockReadGuard::map(lock, |config| {
+        let ledger = config.load_immutable();
         if let Some(component) = ledger.get_component(address) {
             if let Ok(state) = component.state(SuperUser) {
                 if let Ok(_) = format_data_with_ledger(&state, ledger, &mut vids) {

@@ -1,32 +1,36 @@
 use radix_engine::ledger::InMemoryLedger;
-use radix_engine::transaction::TransactionExecutor;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub struct Config {
-    pub nonce: AtomicUsize,
-    pub epoch: AtomicUsize,
-    pub updated: AtomicBool,
+    pub nonce: u64,
+    pub epoch: u64,
+    pub updated: bool,
+    pub ledger: InMemoryLedger,
 }
 
 impl Config {
     pub fn new() -> Config {
         Config {
-            nonce: AtomicUsize::new(0),
-            epoch: AtomicUsize::new(0),
-            updated: AtomicBool::new(false),
+            nonce: 0_u64,
+            epoch: 0_u64,
+            updated: false,
+            ledger: InMemoryLedger::with_bootstrap(),
         }
     }
 
-    pub fn store_nonce(&mut self, executor: &TransactionExecutor<InMemoryLedger>) {
-        let nonce_save = executor.nonce() as usize;
-        self.updated.store(true, Ordering::SeqCst);
-        self.nonce.store(nonce_save, Ordering::SeqCst);
+    pub fn store_nonce(&mut self, nonce: u64) {
+        self.nonce = nonce;
+        self.updated = true;
     }
 
-    pub fn load_nonce(&mut self) -> (u64, u64) {
-        let epoch = self.epoch.load(Ordering::SeqCst);
-        let nonce = self.nonce.load(Ordering::SeqCst);
+    pub fn increment_epoch(&mut self) {
+        self.epoch += 1;
+    }
 
-        (epoch as u64, nonce as u64)
+    pub fn load(&mut self) -> (u64, u64, &mut InMemoryLedger) {
+        (self.epoch, self.nonce, &mut self.ledger)
+    }
+
+    pub fn load_immutable(&self) -> &InMemoryLedger {
+        &self.ledger
     }
 }
